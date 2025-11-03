@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import '../models/parking_zone.dart';
 
 class TappablePolygonLayer extends StatelessWidget {
