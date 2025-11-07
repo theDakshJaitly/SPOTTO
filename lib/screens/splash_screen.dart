@@ -17,7 +17,7 @@ class _SplashScreenState extends State<SplashScreen> {
     _navigateToHome();
   }
 
-  _navigateToHome() async {
+  Future<void> _navigateToHome() async {
     // Wait for 3 seconds
     await Future.delayed(const Duration(milliseconds: 3000), () {});
     
