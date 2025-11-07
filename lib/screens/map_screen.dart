@@ -496,6 +496,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 zone: zone,
                 scrollController: scrollController,
                 onParkHere: _parkInZone,
+                userLocation: _locationFetched ? _userLocation : null,
               ),
             );
           },
