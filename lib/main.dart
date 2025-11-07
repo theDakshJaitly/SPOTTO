@@ -77,7 +77,7 @@ class SpottoApp extends StatelessWidget {
           backgroundColor: Colors.white,
           elevation: 0,
           indicatorColor: spottoBlue.withOpacity(0.1), // The pill shape
-          labelTextStyle: MaterialStateProperty.all(
+          labelTextStyle: WidgetStateProperty.all(
             GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w500),
           ),
         ),

@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
-// using built-in Material icons for compatibility and consistency
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 import '../data/mock_data.dart';
 import '../models/parking_zone.dart';
 import 'zone_details_screen.dart';
+
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -16,25 +18,172 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-// We need TickerProviderStateMixin for the parking timer
 class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   late List<ParkingZone> zones;
   Timer? _simulationTimer;
   final Random _random = Random();
+  late MapController _mapController;
 
-  // --- NEW STATE VARIABLES ---
+  LatLng _userLocation = const LatLng(18.604792, 73.716666);
+  bool _locationFetched = false;
+  String _currentPlacename = "Locating...";
+  bool _isLocating = false; // <--- NEW: To prevent multiple requests
+
+  StreamSubscription<ServiceStatus>? _gpsServiceSubscription;
+  StreamSubscription<Position>? _positionStreamSubscription; // <--- NEW: For location stream
+
   bool _isParked = false;
   ParkingZone? _parkedZone;
   Timer? _parkingTimer;
   Duration _parkingDuration = Duration.zero;
-  // --- END NEW STATE ---
 
   @override
   void initState() {
     super.initState();
     zones = List.from(mockParkingZones);
+    _mapController = MapController();
     _startLiveSimulation();
+
+    // Listen for GPS service status (e.g., user turning it on/off)
+    _gpsServiceSubscription = Geolocator.getServiceStatusStream().listen(
+            (ServiceStatus status) {
+          if (status == ServiceStatus.enabled) {
+            _determinePosition(); // GPS was just turned on, try to get location
+          } else {
+            setState(() {
+              _locationFetched = false;
+              _currentPlacename = "Please enable GPS";
+            });
+          }
+        }
+    );
+    // Also run the check once on init
+    _determinePosition();
   }
+
+  Future<void> _showEnableGpsDialog() async {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('GPS is Disabled'),
+          content: const SingleChildScrollView(
+            child: Text('Please enable GPS to find parking zones near you.'),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+            ),
+            TextButton(
+              child: const Text('Turn On'),
+              onPressed: () {
+                Geolocator.openLocationSettings();
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // --- COMPLETELY REWRITTEN LOCATION LOGIC ---
+  Future<void> _determinePosition() async {
+    // 1. Check if GPS service is enabled
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) {
+        setState(() => _currentPlacename = "Please enable GPS");
+        _showEnableGpsDialog();
+      }
+      return;
+    }
+
+    // 2. Check for permissions
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        if (mounted) setState(() => _currentPlacename = "Location permission denied");
+        return;
+      }
+    }
+
+    // 3. Prevent multiple streams if one is already running
+    if (_isLocating) return;
+
+    if (mounted) {
+      setState(() {
+        _isLocating = true;
+        _currentPlacename = "Locating...";
+      });
+    }
+
+    // 4. Cancel any old stream
+    await _positionStreamSubscription?.cancel();
+
+    // 5. Start a new location stream
+    _positionStreamSubscription = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10, // Only update if moved 10 meters
+        )
+    ).timeout(
+      // 6. Add a timeout to the *entire stream*
+        const Duration(seconds: 15),
+        onTimeout: (sink) {
+          if (mounted) {
+            setState(() {
+              _currentPlacename = "Location timeout. Try again.";
+              _isLocating = false;
+            });
+          }
+          sink.close();
+        }
+    ).listen(
+            (Position position) async {
+          // 7. WE GOT A LOCATION!
+
+          // Stop listening, we only need one good location
+          await _positionStreamSubscription?.cancel();
+
+          List<Placemark> placemarks = await placemarkFromCoordinates(
+              position.latitude,
+              position.longitude
+          );
+
+          String address = "Current Location";
+          if (placemarks.isNotEmpty) {
+            final pm = placemarks.first;
+            address = "${pm.street ?? ''}, ${pm.locality ?? ''}";
+            if (address.trim() == ",") address = pm.name ?? "Current Location";
+          }
+
+          if (mounted) {
+            setState(() {
+              _userLocation = LatLng(position.latitude, position.longitude);
+              _locationFetched = true;
+              _currentPlacename = address;
+              _isLocating = false; // We are done
+              _mapController.move(_userLocation, 18.0);
+            });
+          }
+        },
+        onError: (error) {
+          if (mounted) {
+            setState(() {
+              _currentPlacename = "Error finding location";
+              _isLocating = false;
+            });
+          }
+        }
+    );
+  }
+  // --- END REWRITTEN LOGIC ---
 
   void _startLiveSimulation() {
     _simulationTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
@@ -52,10 +201,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
-  // --- NEW TIMER CONTROLS ---
   void _startParkingTimer() {
     _parkingDuration = Duration.zero;
-    _parkingTimer?.cancel(); // Cancel any existing timer
+    _parkingTimer?.cancel();
     _parkingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) {
         timer.cancel();
@@ -73,12 +221,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     String twoDigitSeconds = twoDigits(d.inSeconds.remainder(60));
     return "${twoDigits(d.inHours)}:$twoDigitMinutes:$twoDigitSeconds";
   }
-  // --- END TIMER CONTROLS ---
 
   @override
   void dispose() {
+    _gpsServiceSubscription?.cancel();
+    _positionStreamSubscription?.cancel(); // <--- NEW: Cancel position stream
     _simulationTimer?.cancel();
     _parkingTimer?.cancel();
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -92,7 +242,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     }
   }
 
-  // This still shows the modal sheet for details
   void _onZoneTap(ParkingZone zone) {
     showModalBottomSheet(
       context: context,
@@ -115,7 +264,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               child: ZoneDetailsScreen(
                 zone: zone,
                 scrollController: scrollController,
-                // THIS IS THE NEW PART: Pass the _parkInZone function
                 onParkHere: _parkInZone,
               ),
             );
@@ -125,14 +273,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
-  // --- NEW FUNCTIONS TO MANAGE STATE ---
   void _parkInZone(ParkingZone zone) {
-    Navigator.pop(context); // Close the details modal
+    Navigator.pop(context);
     setState(() {
       _isParked = true;
       _parkedZone = zone;
     });
-    _startParkingTimer(); // Start the timer!
+    _startParkingTimer();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Parked at ${zone.name}! +20 points'),
@@ -152,7 +299,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       const SnackBar(content: Text('Parking session ended.')),
     );
   }
-  // --- END NEW FUNCTIONS ---
 
   @override
   Widget build(BuildContext context) {
@@ -160,11 +306,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       body: Stack(
         children: [
           FlutterMap(
+            mapController: _mapController,
             options: MapOptions(
-              initialCenter: const LatLng(18.604792, 73.716666),
+              initialCenter: _userLocation,
               initialZoom: 18.0,
               onTap: (tapPos, latlng) {
-                // Only allow tapping zones if NOT parked
                 if (!_isParked) {
                   for (final zone in zones) {
                     if (_pointInPolygon(latlng, zone.boundaries)) {
@@ -177,17 +323,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
             children: [
               TileLayer(
-        urlTemplate:
-          'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-        subdomains: const ['a', 'b', 'c', 'd'],
-        userAgentPackageName: 'com.example.spotto',
+                urlTemplate:
+                'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+                subdomains: const ['a', 'b', 'c', 'd'],
+                userAgentPackageName: 'com.example.spotto',
+                retinaMode: true,
               ),
               PolygonLayer(
                 polygons: zones.map((zone) {
                   final baseColor = _getZoneColor(zone.probability);
                   return Polygon(
                     points: zone.boundaries,
-                    // Dim the polygons if we're parked
                     color: _isParked
                         ? baseColor.withOpacity(0.1)
                         : baseColor.withOpacity(0.20),
@@ -195,11 +341,35 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                         ? baseColor.withOpacity(0.3)
                         : baseColor.withOpacity(0.85),
                     borderStrokeWidth: 3.0,
-                    isFilled: true,
                   );
                 }).toList(),
               ),
-              if (!_isParked) // Only show markers if not parked
+
+              MarkerLayer(
+                markers: [
+                  if (_locationFetched)
+                    Marker(
+                      width: 24,
+                      height: 24,
+                      point: _userLocation,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Theme.of(context).colorScheme.primary,
+                          border: Border.all(color: Colors.white, width: 3),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
+                              blurRadius: 10,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+
+              if (!_isParked)
                 MarkerLayer(
                   markers: zones.map((zone) {
                     final centroid = _centroid(zone.boundaries);
@@ -248,7 +418,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           ),
 
           // --- CONDITIONAL UI ---
-          // This is the new logic. Show one widget or the other.
           if (_isParked)
             _buildActiveParkingCard()
           else
@@ -284,17 +453,84 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ),
               ),
             ),
+
+          // --- Top Address Bar ---
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 16,
+            left: 16,
+            right: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                  )
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                      _isLocating
+                          ? Icons.sync // Show a spinner
+                          : (_locationFetched ? Icons.location_on : Icons.location_off),
+                      color: _locationFetched
+                          ? Theme.of(context).colorScheme.primary
+                          : Colors.grey,
+                      size: 20
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _currentPlacename,
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // --- "My Location" FAB ("Eye" Icon) ---
+          if (!_isParked)
+            Positioned(
+              bottom: 250, // Adjust this to sit above your sheet
+              right: 16,
+              child: FloatingActionButton(
+                onPressed: () {
+                  if(_locationFetched) {
+                    _mapController.move(_userLocation, 18.0);
+                  } else {
+                    // Try to get it again
+                    _determinePosition();
+                  }
+                },
+                backgroundColor: Colors.white,
+                foregroundColor: Theme.of(context).colorScheme.primary,
+                child: const Icon(Icons.my_location),
+              ),
+            ),
+
         ],
       ),
     );
   }
 
-  // --- NEW WIDGET for Mockup 2 (Search + List) ---
+  // --- WIDGETS (Unchanged) ---
+
   Widget _buildSearchSheet() {
     return DraggableScrollableSheet(
-      initialChildSize: 0.25, // Start low
-      minChildSize: 0.1, // Can be just the search bar
-      maxChildSize: 0.8, // Can expand full
+      initialChildSize: 0.25,
+      minChildSize: 0.1,
+      maxChildSize: 0.8,
       builder: (_, scrollController) {
         return Container(
           decoration: BoxDecoration(
@@ -314,7 +550,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             controller: scrollController,
             padding: const EdgeInsets.all(0),
             children: [
-              // Grabber handle
               Center(
                 child: Container(
                   width: 40,
@@ -326,13 +561,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              // Search Bar
               Padding(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: TextField(
                   decoration: InputDecoration(
-          prefixIcon: const Icon(Icons.search, color: Colors.grey),
+                    prefixIcon: const Icon(Icons.search, color: Colors.grey),
                     hintText: 'Search destination or zone...',
                     filled: true,
                     fillColor: Colors.grey[100],
@@ -353,8 +587,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                       ?.copyWith(fontWeight: FontWeight.bold),
                 ),
               ),
-              // List of nearby zones
-              ...zones.map((zone) => _buildZoneListItem(zone)).toList(),
+              ...zones.map((zone) => _buildZoneListItem(zone)),
             ],
           ),
         );
@@ -362,7 +595,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
-  // --- NEW WIDGET for list item ---
   Widget _buildZoneListItem(ParkingZone zone) {
     final color = _getZoneColor(zone.probability);
     return ListTile(
@@ -380,15 +612,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
       subtitle: Text(
-        '${(zone.probability * 100).toInt()}% chance',
+        '${(zone.probability * 100).toInt()}% chance', // UNTOUCHED
         style: TextStyle(color: color, fontWeight: FontWeight.bold),
       ),
-  trailing: const Icon(Icons.chevron_right),
+      trailing: const Icon(Icons.chevron_right),
       onTap: () => _onZoneTap(zone),
     );
   }
 
-  // --- NEW WIDGET for Mockup 3 (Active Parking) ---
   Widget _buildActiveParkingCard() {
     if (_parkedZone == null) return Container();
 
@@ -424,7 +655,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             const SizedBox(height: 4),
             Row(
               children: [
-                Icon(Icons.check_circle, color: Colors.green, size: 16),
+                const Icon(Icons.check_circle, color: Colors.green, size: 16),
                 const SizedBox(width: 8),
                 Text(
                   "Spot confirmed",
@@ -444,7 +675,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   "Time",
                   _formatDuration(_parkingDuration),
                 ),
-                _buildStatColumn("Rate", "\$2.50/hr"), // Mock data
+                _buildStatColumn("Rate", "\$2.50/hr"), // UNTOUCHED (Mock data)
                 _buildStatColumn("Points", "+20"), // Mock data
               ],
             ),
@@ -456,7 +687,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     icon: const Icon(Icons.warning_amber_rounded, size: 20),
                     label: const Text("Report Full"),
                     onPressed: () {
-                       ScaffoldMessenger.of(context).showSnackBar(
+                      ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(content: Text('Report sent! Thanks.')),
                       );
                     },
@@ -510,7 +741,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       ],
     );
   }
-  // --- END NEW WIDGETS ---
 
   Widget _buildLegendItem(String label, Color color) {
     return Row(
