@@ -8,6 +8,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../data/mock_data.dart';
 import '../models/parking_zone.dart';
+import '../models/search_result.dart';
+import '../services/maptiler_service.dart';
 import 'zone_details_screen.dart';
 
 
@@ -38,10 +40,30 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   Timer? _parkingTimer;
   Duration _parkingDuration = Duration.zero;
 
+  // Search functionality
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  List<SearchResult> _searchResults = [];
+  bool _isSearching = false;
+  Timer? _searchDebounceTimer;
+  bool _showSearchOverlay = false; // Full-screen search overlay
+
+  // Track bottom sheet size for FAB positioning
+  double _bottomSheetHeight = 0.0;
+
   @override
   void initState() {
     super.initState();
     _mapController = MapController();
+    // Initialize bottom sheet height to initial size (25% of screen)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        final screenHeight = MediaQuery.of(context).size.height;
+        setState(() {
+          _bottomSheetHeight = screenHeight * 0.25;
+        });
+      }
+    });
     // Don't start simulation or load zones yet - wait for location
 
     // Listen for GPS service status (e.g., user turning it on/off)
@@ -322,6 +344,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _positionStreamSubscription?.cancel(); // <--- NEW: Cancel position stream
     _simulationTimer?.cancel();
     _parkingTimer?.cancel();
+    _searchDebounceTimer?.cancel();
+    _searchController.dispose();
+    _searchFocusNode.dispose();
     _mapController.dispose();
     super.dispose();
   }
@@ -334,6 +359,118 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     } else {
       return const Color(0xFFEF4444);
     }
+  }
+
+  // Search functionality
+  void _openSearchOverlay() {
+    setState(() {
+      _showSearchOverlay = true;
+    });
+    // Focus search field after overlay opens
+    Future.delayed(const Duration(milliseconds: 100), () {
+      _searchFocusNode.requestFocus();
+    });
+  }
+
+  void _closeSearchOverlay() {
+    setState(() {
+      _showSearchOverlay = false;
+      _searchResults = [];
+      _isSearching = false;
+    });
+    _searchController.clear();
+    _searchFocusNode.unfocus();
+  }
+
+  void _onSearchChanged(String query) {
+    _searchDebounceTimer?.cancel();
+    
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _isSearching = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearching = true;
+    });
+
+    // Debounce search - wait 300ms after user stops typing
+    _searchDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+      _performSearch(query);
+    });
+  }
+
+  Future<void> _performSearch(String query) async {
+    if (query.isEmpty) return;
+
+    try {
+      final results = await MapTilerService.searchPlaces(
+        query,
+        proximity: _locationFetched ? _userLocation : null,
+      );
+
+      if (mounted) {
+        setState(() {
+          _searchResults = results;
+          _isSearching = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isSearching = false;
+        });
+      }
+      print('Search error: $e');
+    }
+  }
+
+  void _onSearchResultSelected(SearchResult result) {
+    // Close search overlay
+    _closeSearchOverlay();
+
+    // Move map to result location
+    _mapController.move(result.center, 16.0);
+
+    // If result has a polygon, create a parking zone from it
+    if (result.polygon != null && result.polygon!.isNotEmpty) {
+      _createParkingZoneFromSearch(result);
+    } else {
+      // Show a marker or info for point results
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${result.displayName} - No polygon boundary available'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _createParkingZoneFromSearch(SearchResult result) {
+    // Create a new parking zone from the search result polygon
+    final newZone = ParkingZone(
+      id: 'search_${result.id}',
+      name: result.displayName,
+      boundaries: result.polygon!,
+      probability: _random.nextDouble() * 0.5 + 0.3, // Random between 0.3-0.8
+    );
+
+    setState(() {
+      // Add to existing zones or replace if it's a search zone
+      zones.removeWhere((z) => z.id.startsWith('search_'));
+      zones.add(newZone);
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Added parking zone: ${result.displayName}'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 
   void _onZoneTap(ParkingZone zone) {
@@ -594,25 +731,44 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
           ),
 
-          // --- "My Location" FAB ("Eye" Icon) ---
-          if (!_isParked)
-            Positioned(
-              bottom: 250, // Adjust this to sit above your sheet
-              right: 16,
-              child: FloatingActionButton(
-                onPressed: () {
-                  if(_locationFetched) {
-                    _mapController.move(_userLocation, 18.0);
-                  } else {
-                    // Try to get it again
-                    _determinePosition();
-                  }
-                },
-                backgroundColor: Colors.white,
-                foregroundColor: Theme.of(context).colorScheme.primary,
-                child: const Icon(Icons.my_location),
-              ),
+          // --- "My Location" FAB - Hide when bottom sheet covers it ---
+          if (!_isParked && !_showSearchOverlay)
+            // FAB is positioned at fixed 100px from bottom
+            // Hide it when bottom sheet height exceeds this position
+            Builder(
+              builder: (context) {
+                const double fabBottomPosition = 100.0; // Fixed position from bottom
+                const double fabHeight = 56.0; // Standard FAB height
+                const double fabTopPosition = fabBottomPosition + fabHeight; // Top of FAB
+                
+                // Hide FAB if bottom sheet covers it (sheet height > FAB bottom position)
+                final bool shouldShow = _bottomSheetHeight < fabBottomPosition;
+                
+                if (!shouldShow) return const SizedBox.shrink();
+                
+                return Positioned(
+                  bottom: fabBottomPosition,
+                  right: 16,
+                  child: FloatingActionButton(
+                    onPressed: () {
+                      if(_locationFetched) {
+                        _mapController.move(_userLocation, 18.0);
+                      } else {
+                        // Try to get it again
+                        _determinePosition();
+                      }
+                    },
+                    backgroundColor: Colors.white,
+                    foregroundColor: Theme.of(context).colorScheme.primary,
+                    child: const Icon(Icons.my_location),
+                  ),
+                );
+              },
             ),
+
+          // --- Full-screen Search Overlay ---
+          if (_showSearchOverlay)
+            _buildSearchOverlay(),
 
         ],
       ),
@@ -622,12 +778,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   // --- WIDGETS (Unchanged) ---
 
   Widget _buildSearchSheet() {
-    return DraggableScrollableSheet(
-      initialChildSize: 0.25,
-      minChildSize: 0.1,
-      maxChildSize: 0.8,
-      builder: (_, scrollController) {
-        return Container(
+    return NotificationListener<DraggableScrollableNotification>(
+      onNotification: (notification) {
+        // Track the bottom sheet's current height
+        final screenHeight = MediaQuery.of(context).size.height;
+        final currentHeight = notification.extent * screenHeight;
+        if (mounted && _bottomSheetHeight != currentHeight) {
+          setState(() {
+            _bottomSheetHeight = currentHeight;
+          });
+        }
+        return true;
+      },
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.25,
+        minChildSize: 0.1,
+        maxChildSize: 0.8,
+        builder: (_, scrollController) {
+          return Container(
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: const BorderRadius.only(
@@ -656,18 +824,31 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
+              // Search button that opens full-screen overlay
               Padding(
                 padding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: TextField(
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(Icons.search, color: Colors.grey),
-                    hintText: 'Search destination or zone...',
-                    filled: true,
-                    fillColor: Colors.grey[100],
-                    border: OutlineInputBorder(
+                child: InkWell(
+                  onTap: _openSearchOverlay,
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[100],
                       borderRadius: BorderRadius.circular(16),
-                      borderSide: BorderSide.none,
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.search, color: Colors.grey),
+                        const SizedBox(width: 12),
+                        Text(
+                          'Search destination or zone...',
+                          style: GoogleFonts.inter(
+                            color: Colors.grey[600],
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -735,10 +916,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 )
               else
                 ...zones.map((zone) => _buildZoneListItem(zone)),
-            ],
-          ),
-        );
-      },
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -764,6 +946,213 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       ),
       trailing: const Icon(Icons.chevron_right),
       onTap: () => _onZoneTap(zone),
+    );
+  }
+
+  // Full-screen search overlay (light theme)
+  Widget _buildSearchOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.white,
+        child: SafeArea(
+          child: Column(
+            children: [
+              // Search bar at top
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.black),
+                      onPressed: _closeSearchOverlay,
+                    ),
+                    Expanded(
+                      child: ValueListenableBuilder<TextEditingValue>(
+                        valueListenable: _searchController,
+                        builder: (context, value, child) {
+                          return TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocusNode,
+                            onChanged: _onSearchChanged,
+                            autofocus: true,
+                            style: const TextStyle(color: Colors.black),
+                            decoration: InputDecoration(
+                              hintText: 'Search destination or zone...',
+                              hintStyle: TextStyle(color: Colors.grey[500]),
+                              border: InputBorder.none,
+                              prefixIcon: const Icon(Icons.search, color: Colors.grey),
+                              suffixIcon: value.text.isNotEmpty
+                                  ? IconButton(
+                                      icon: const Icon(Icons.clear, color: Colors.grey),
+                                      onPressed: () {
+                                        _searchController.clear();
+                                        setState(() {
+                                          _searchResults = [];
+                                          _isSearching = false;
+                                        });
+                                      },
+                                    )
+                                  : _isSearching
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(12.0),
+                                          child: SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.grey,
+                                            ),
+                                          ),
+                                        )
+                                      : null,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Search results list
+              Expanded(
+                child: Container(
+                  color: Colors.white,
+                  child: _isSearching && _searchResults.isEmpty
+                      ? const Center(
+                          child: CircularProgressIndicator(),
+                        )
+                      : _searchResults.isEmpty && _searchController.text.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.search,
+                                    size: 64,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'Search for places',
+                                    style: GoogleFonts.inter(
+                                      color: Colors.grey[600],
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : _searchResults.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    'No results found',
+                                    style: GoogleFonts.inter(
+                                      color: Colors.grey[600],
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                )
+                              : ListView.builder(
+                                  itemCount: _searchResults.length,
+                                  itemBuilder: (context, index) {
+                                    final result = _searchResults[index];
+                                    return _buildSearchResultItem(result);
+                                  },
+                                ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchResultItem(SearchResult result) {
+    final hasPolygon = result.polygon != null && result.polygon!.isNotEmpty;
+    
+    return InkWell(
+      onTap: () => _onSearchResultSelected(result),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border(
+            bottom: BorderSide(color: Colors.grey[200]!, width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              hasPolygon ? Icons.map : Icons.location_on,
+              color: hasPolygon 
+                  ? Theme.of(context).colorScheme.primary
+                  : Colors.grey[600],
+              size: 24,
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    result.displayName,
+                    style: GoogleFonts.inter(
+                      color: Colors.black,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 16,
+                    ),
+                  ),
+                  if (result.fullAddress.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      result.fullAddress,
+                      style: GoogleFonts.inter(
+                        color: Colors.grey[600],
+                        fontSize: 13,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (hasPolygon)
+              Container(
+                margin: const EdgeInsets.only(right: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Zone',
+                  style: TextStyle(
+                    color: Colors.green[700],
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            Icon(
+              Icons.chevron_right,
+              color: Colors.grey[400],
+              size: 20,
+            ),
+          ],
+        ),
+      ),
     );
   }
 
