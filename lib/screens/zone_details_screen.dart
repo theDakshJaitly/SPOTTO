@@ -1,18 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:latlong2/latlong.dart';
 import '../models/parking_zone.dart';
 import '../data/mock_data.dart';
+import '../services/navigation_service.dart';
 
 class ZoneDetailsScreen extends StatelessWidget {
   final ParkingZone zone;
   final ScrollController? scrollController;
-  final void Function(ParkingZone) onParkHere; // <-- ADD THIS
+  final void Function(ParkingZone) onParkHere;
+  final LatLng? userLocation; // User's current location for navigation
+  final void Function(ParkingZone) onNavigateExternal; // Callback when external navigation starts
 
   const ZoneDetailsScreen({
     super.key,
     required this.zone,
     this.scrollController,
-    required this.onParkHere, // <-- AND THIS
+    required this.onParkHere,
+    this.userLocation, // Optional user location
+    required this.onNavigateExternal, // Required callback
   });
 
   @override
@@ -186,8 +192,18 @@ class ZoneDetailsScreen extends StatelessWidget {
                 height: 52,
                 child: ElevatedButton(
                   onPressed: () {
-                    debugPrint('Navigate tapped');
-                    Navigator.pop(context);
+                    // Calculate destination (center of parking zone)
+                    final destination = _calculateZoneCenter(zone.boundaries);
+                    
+                    // Show navigation app selection dialog
+                    NavigationService.showNavigationOptions(
+                      context,
+                      destination,
+                      userLocation, // Pass user's current location as origin
+                    );
+                    
+                    // Inform MapScreen that external navigation has started for this zone
+                    onNavigateExternal(zone);
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.primary,
@@ -266,5 +282,18 @@ class ZoneDetailsScreen extends StatelessWidget {
     } else {
       return Colors.red;
     }
+  }
+
+  // Calculate center point of a polygon (for navigation destination)
+  LatLng _calculateZoneCenter(List<LatLng> boundaries) {
+    if (boundaries.isEmpty) return const LatLng(0, 0);
+    
+    double lat = 0.0;
+    double lng = 0.0;
+    for (final point in boundaries) {
+      lat += point.latitude;
+      lng += point.longitude;
+    }
+    return LatLng(lat / boundaries.length, lng / boundaries.length);
   }
 }

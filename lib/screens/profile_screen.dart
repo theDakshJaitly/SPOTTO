@@ -44,12 +44,12 @@ class ProfileScreen extends StatelessWidget {
               physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 12,
               crossAxisSpacing: 12,
-              childAspectRatio: 1.8, // Make stats cards wider
+              childAspectRatio: 1.5, // Adjusted to give more height to cards
               children: [
                 _buildStatCard(
                   'Total Parks', '72', Icons.local_parking, Colors.green),
                 _buildStatCard(
-                  'Reports Made', '18', Icons.report_problem, Colors.orange),
+                  'Reports Made', '10', Icons.report_problem, Colors.orange),
                 _buildStatCard(
                   'Eco Rank', '#12', Icons.eco, spottoBlue),
                 _buildStatCard(
@@ -196,26 +196,34 @@ class ProfileScreen extends StatelessWidget {
         side: BorderSide(color: Colors.grey.shade200, width: 1),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(12.0), // Reduced padding
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min, // Prevent overflow
           children: [
-            Icon(icon, color: color, size: 28),
-            const SizedBox(height: 12),
-            Text(
-              value,
-              style: GoogleFonts.inter(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
+            Icon(icon, color: color, size: 24), // Slightly smaller icon
+            const SizedBox(height: 8), // Reduced spacing
+            Flexible(
+              child: Text(
+                value,
+                style: GoogleFonts.inter(
+                  fontSize: 18, // Slightly smaller font
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             const SizedBox(height: 2),
-            Text(
-              label,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                color: Colors.grey[600],
+            Flexible(
+              child: Text(
+                label,
+                style: GoogleFonts.inter(
+                  fontSize: 12, // Slightly smaller font
+                  color: Colors.grey[600],
+                ),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 2,
               ),
             ),
           ],

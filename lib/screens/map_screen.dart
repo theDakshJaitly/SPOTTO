@@ -8,9 +8,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import '../data/mock_data.dart';
 import '../models/parking_zone.dart';
-import '../models/search_result.dart';
-import '../services/maptiler_service.dart';
+import '../models/search_suggestion.dart';
 import 'zone_details_screen.dart';
+import 'total_fare_screen.dart';
 
 
 class MapScreen extends StatefulWidget {
@@ -20,7 +20,7 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
+class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   List<ParkingZone> zones = []; // Start with empty list
   Timer? _simulationTimer;
   final Random _random = Random();
@@ -31,6 +31,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   String _currentPlacename = "Locating...";
   bool _isLocating = false; // <--- NEW: To prevent multiple requests
   bool _isLoadingZones = false; // Track if zones are being fetched
+  
+  // Store original location for back button functionality
+  LatLng? _originalLocation;
+  String? _originalPlacename;
 
   StreamSubscription<ServiceStatus>? _gpsServiceSubscription;
   StreamSubscription<Position>? _positionStreamSubscription; // <--- NEW: For location stream
@@ -43,18 +47,30 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   // Search functionality
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
-  List<SearchResult> _searchResults = [];
+  List<SearchSuggestion> _searchResults = [];
   bool _isSearching = false;
   Timer? _searchDebounceTimer;
   bool _showSearchOverlay = false; // Full-screen search overlay
+  SearchSuggestion? _selectedLocation; // Track selected location for zone fetching
 
   // Track bottom sheet size for FAB positioning
   double _bottomSheetHeight = 0.0;
+  
+  // Track current zoom level
+  double _currentZoom = 18.0;
+  
+  // Track external navigation state
+  bool _isNavigatingExternally = false;
+  ParkingZone? _zoneToParkAfterNavigation;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // Add lifecycle observer
     _mapController = MapController();
+    // Store the initial default location as original location
+    _originalLocation = _userLocation;
+    _originalPlacename = _currentPlacename;
     // Initialize bottom sheet height to initial size (25% of screen)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
@@ -84,7 +100,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 _currentPlacename = "Please enable GPS to fetch zones";
                 // Reset to default location
                 _userLocation = const LatLng(18.604792, 73.716666);
-                _mapController.move(_userLocation, 18.0);
+                _currentZoom = 18.0;
+                _mapController.move(_userLocation, _currentZoom);
               });
             }
           }
@@ -152,6 +169,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           setState(() {
             _currentPlacename = "Location permission denied";
             _locationFetched = true; // Still allow zones to show
+            
+            // Store original location if not already stored (using default)
+            if (_originalLocation == null) {
+              _originalLocation = _userLocation;
+              _originalPlacename = _currentPlacename;
+            }
           });
           // Load zones anyway after a delay (for testing/fallback)
           Future.delayed(const Duration(seconds: 2), () {
@@ -191,6 +214,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               _isLocating = false;
               // Still mark as fetched so we can show zones
               _locationFetched = true;
+              
+              // Store original location if not already stored (using default)
+              if (_originalLocation == null) {
+                _originalLocation = _userLocation;
+                _originalPlacename = _currentPlacename;
+              }
             });
             // Load zones even if location timed out
             _fetchParkingZones();
@@ -222,7 +251,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               _locationFetched = true;
               _currentPlacename = address;
               _isLocating = false; // We are done
-              _mapController.move(_userLocation, 18.0);
+              _currentZoom = 18.0;
+              _mapController.move(_userLocation, _currentZoom);
+              
+              // Update original location with the actual GPS location
+              // (This will override the default location set in initState)
+              _originalLocation = _userLocation;
+              _originalPlacename = address;
             });
             // Now that location is found, fetch parking zones
             _fetchParkingZones();
@@ -235,6 +270,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               _isLocating = false;
               // Still mark as fetched so we can show zones
               _locationFetched = true;
+              
+              // Store original location if not already stored (using default)
+              if (_originalLocation == null) {
+                _originalLocation = _userLocation;
+                _originalPlacename = _currentPlacename;
+              }
             });
             // Load zones even if location failed
             _fetchParkingZones();
@@ -263,7 +304,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       });
       // Center map on zones if location wasn't fetched (use default location)
       if (!_locationFetched) {
-        _mapController.move(_userLocation, 18.0);
+                        _currentZoom = 18.0;
+                        _mapController.move(_userLocation, _currentZoom);
       }
       // Start the simulation timer now that we have zones
       _startLiveSimulation();
@@ -272,29 +314,73 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   // Generate parking zones relative to the user's current location
   List<ParkingZone> _generateZonesRelativeToLocation(LatLng userLocation) {
-    // Original center point (Pune coordinates where zones were originally defined)
-    const LatLng originalCenter = LatLng(18.604792, 73.716666);
+    // Navi Mumbai coordinates (where Mumbai Private Zone should appear)
+    const LatLng naviMumbaiCenter = LatLng(19.030826, 73.019854);
+    final double distanceToNaviMumbai = _calculateDistance(userLocation, naviMumbaiCenter);
+    final bool isNearNaviMumbai = distanceToNaviMumbai < 5.0; // 5km radius
     
-    // Calculate offset from original center to user's location
-    final double latOffset = userLocation.latitude - originalCenter.latitude;
-    final double lngOffset = userLocation.longitude - originalCenter.longitude;
-    
-    // Create zones by applying the offset to each boundary point
-    return mockParkingZones.map((originalZone) {
-      final List<LatLng> adjustedBoundaries = originalZone.boundaries.map((point) {
-        return LatLng(
-          point.latitude + latOffset,
-          point.longitude + lngOffset,
+    // If user is near Navi Mumbai, show ONLY the Mumbai Private Zone
+    // Otherwise, show the regular public zones (shifted relative to location)
+    if (isNearNaviMumbai) {
+      // Only show Mumbai Private Zone when near Navi Mumbai
+      final mumbaiZone = mockParkingZones.firstWhere(
+        (zone) => zone.id == 'zone_mumbai_private',
+        orElse: () => throw StateError('Mumbai zone not found'),
+      );
+      return [
+        ParkingZone(
+          id: mumbaiZone.id,
+          name: mumbaiZone.name,
+          boundaries: mumbaiZone.boundaries, // Use fixed coordinates
+          probability: mumbaiZone.probability,
+          isPrivate: mumbaiZone.isPrivate,
+          hourlyRate: mumbaiZone.hourlyRate,
+        ),
+      ];
+    } else {
+      // Show regular public zones (shifted relative to user location)
+      // Original center point (Pune coordinates where zones were originally defined)
+      const LatLng originalCenter = LatLng(18.604792, 73.716666);
+      
+      // Calculate offset from original center to user's location
+      final double latOffset = userLocation.latitude - originalCenter.latitude;
+      final double lngOffset = userLocation.longitude - originalCenter.longitude;
+      
+      // Return all zones EXCEPT Mumbai zone, shifted relative to location
+      return mockParkingZones.where((zone) => zone.id != 'zone_mumbai_private').map((originalZone) {
+        final List<LatLng> adjustedBoundaries = originalZone.boundaries.map((point) {
+          return LatLng(
+            point.latitude + latOffset,
+            point.longitude + lngOffset,
+          );
+        }).toList();
+        
+        return ParkingZone(
+          id: originalZone.id,
+          name: originalZone.name,
+          boundaries: adjustedBoundaries,
+          probability: originalZone.probability,
+          isPrivate: originalZone.isPrivate,
+          hourlyRate: originalZone.hourlyRate,
         );
       }).toList();
-      
-      return ParkingZone(
-        id: originalZone.id,
-        name: originalZone.name,
-        boundaries: adjustedBoundaries,
-        probability: originalZone.probability,
-      );
-    }).toList();
+    }
+  }
+  
+  // Helper to calculate distance between two coordinates in kilometers
+  double _calculateDistance(LatLng point1, LatLng point2) {
+    const double earthRadius = 6371; // km
+    final double dLat = _toRadians(point2.latitude - point1.latitude);
+    final double dLon = _toRadians(point2.longitude - point1.longitude);
+    final double a = (dLat / 2) * (dLat / 2) +
+        _toRadians(point1.latitude) * _toRadians(point2.latitude) *
+        (dLon / 2) * (dLon / 2);
+    final double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return earthRadius * c;
+  }
+  
+  double _toRadians(double degrees) {
+    return degrees * (pi / 180);
   }
 
   void _startLiveSimulation() {
@@ -339,7 +425,25 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // App has returned to the foreground
+      if (_isNavigatingExternally && _zoneToParkAfterNavigation != null) {
+        setState(() {
+          _isNavigatingExternally = false; // Reset flag
+        });
+        // Show the "Have you parked?" dialog for the zone we were navigating to
+        final zone = _zoneToParkAfterNavigation;
+        _zoneToParkAfterNavigation = null; // Clear the zone
+        if (zone != null && mounted) {
+          _showParkConfirmationDialog(context, zone);
+        }
+      }
+    }
+  }
+
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // Remove lifecycle observer
     _gpsServiceSubscription?.cancel();
     _positionStreamSubscription?.cancel(); // <--- NEW: Cancel position stream
     _simulationTimer?.cancel();
@@ -403,74 +507,144 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
-  Future<void> _performSearch(String query) async {
-    if (query.isEmpty) return;
+  void _performSearch(String query) {
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _isSearching = false;
+      });
+      return;
+    }
 
-    try {
-      final results = await MapTilerService.searchPlaces(
-        query,
-        proximity: _locationFetched ? _userLocation : null,
-      );
+    // Filter mock suggestions based on query
+    final queryLower = query.toLowerCase();
+    final filtered = mockSearchSuggestions.where((suggestion) {
+      return suggestion.name.toLowerCase().contains(queryLower);
+    }).toList();
 
-      if (mounted) {
-        setState(() {
-          _searchResults = results;
-          _isSearching = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isSearching = false;
-        });
-      }
-      print('Search error: $e');
+    if (mounted) {
+      setState(() {
+        _searchResults = filtered;
+        _isSearching = false;
+      });
     }
   }
 
-  void _onSearchResultSelected(SearchResult result) {
+  void _onSearchSuggestionSelected(SearchSuggestion suggestion) {
     // Close search overlay
     _closeSearchOverlay();
 
-    // Move map to result location
-    _mapController.move(result.center, 16.0);
+    // Store selected location
+    _selectedLocation = suggestion;
 
-    // If result has a polygon, create a parking zone from it
-    if (result.polygon != null && result.polygon!.isNotEmpty) {
-      _createParkingZoneFromSearch(result);
-    } else {
-      // Show a marker or info for point results
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${result.displayName} - No polygon boundary available'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+    // Move map to suggestion location
+    _currentZoom = 16.0;
+    _mapController.move(suggestion.coordinates, _currentZoom);
+
+    // Update user location to the selected suggestion
+    setState(() {
+      _userLocation = suggestion.coordinates;
+      _currentPlacename = suggestion.name;
+      _locationFetched = true; // Mark as fetched so UI shows proper message
+    });
+
+    // Fetch zones for this location
+    _fetchZonesForLocation(suggestion);
+  }
+
+  // Fetch zones based on selected location
+  Future<void> _fetchZonesForLocation(SearchSuggestion suggestion) async {
+    if (_isLoadingZones) return;
+
+    setState(() {
+      _isLoadingZones = true;
+    });
+
+    // Simulate network delay
+    await Future.delayed(Duration(milliseconds: 1500 + _random.nextInt(500)));
+
+    if (mounted) {
+      setState(() {
+        if (suggestion.hasParkingZones) {
+          // Load zones relative to the selected location
+          zones = _generateZonesRelativeToLocation(suggestion.coordinates);
+        } else {
+          // No zones for this location
+          zones = [];
+        }
+        _isLoadingZones = false;
+      });
+      
+      // Start simulation timer if zones were loaded
+      if (zones.isNotEmpty) {
+        _startLiveSimulation();
+      }
     }
   }
 
-  void _createParkingZoneFromSearch(SearchResult result) {
-    // Create a new parking zone from the search result polygon
-    final newZone = ParkingZone(
-      id: 'search_${result.id}',
-      name: result.displayName,
-      boundaries: result.polygon!,
-      probability: _random.nextDouble() * 0.5 + 0.3, // Random between 0.3-0.8
-    );
+  void _zoomIn() {
+    final newZoom = (_currentZoom + 1).clamp(3.0, 20.0);
+    _currentZoom = newZoom;
+    _mapController.move(_mapController.camera.center, newZoom);
+  }
 
+  void _zoomOut() {
+    final newZoom = (_currentZoom - 1).clamp(3.0, 20.0);
+    _currentZoom = newZoom;
+    _mapController.move(_mapController.camera.center, newZoom);
+  }
+
+  Future<void> _showParkConfirmationDialog(BuildContext context, ParkingZone zone) async {
+    return showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Have you parked?'),
+          content: const Text('Confirm that you have parked at this location.'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+              },
+              child: const Text('Not yet'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                // Call _parkInZone to activate parking
+                _parkInZone(zone);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _goBackToOriginalLocation() {
+    if (_originalLocation == null || _originalPlacename == null) return;
+    
+    // Clear selected location
+    _selectedLocation = null;
+    
+    // Restore original location
     setState(() {
-      // Add to existing zones or replace if it's a search zone
-      zones.removeWhere((z) => z.id.startsWith('search_'));
-      zones.add(newZone);
+      _userLocation = _originalLocation!;
+      _currentPlacename = _originalPlacename!;
+      _currentZoom = 18.0;
     });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Added parking zone: ${result.displayName}'),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    
+    // Move map back to original location
+    _mapController.move(_originalLocation!, _currentZoom);
+    
+    // Reload zones for original location
+    _fetchParkingZones();
   }
 
   void _onZoneTap(ParkingZone zone) {
@@ -496,6 +670,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 zone: zone,
                 scrollController: scrollController,
                 onParkHere: _parkInZone,
+                userLocation: _locationFetched ? _userLocation : null,
+                onNavigateExternal: (navigatedZone) {
+                  // Track that external navigation has started for this zone
+                  setState(() {
+                    _isNavigatingExternally = true;
+                    _zoneToParkAfterNavigation = navigatedZone;
+                  });
+                },
               ),
             );
           },
@@ -520,15 +702,58 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   void _leaveZone() {
+    // Store the zone and duration before clearing them
+    final zone = _parkedZone;
+    final wasPrivate = zone?.isPrivate ?? false;
+    final parkingDuration = _parkingDuration; // Store before clearing
+    
+    // Always show rewards popup first
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.celebration, color: Colors.white),
+            SizedBox(width: 8),
+            Text('+20 rewards points! 🔥'),
+          ],
+        ),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
+      ),
+    );
+    
+    // Clear parking state
     setState(() {
       _isParked = false;
       _parkedZone = null;
     });
     _parkingTimer?.cancel();
     _parkingDuration = Duration.zero;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Parking session ended.')),
-    );
+    
+    // Conditional payment flow
+    if (wasPrivate && zone != null) {
+      // Calculate total fare based on parking duration
+      // Rate is ₹1 per minute
+      final totalFare = parkingDuration.inMinutes; // ₹1 per minute
+      
+      // Navigate to Total Fare screen
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => TotalFareScreen(
+                zoneName: zone.name,
+                parkingDuration: parkingDuration,
+                ratePerMinute: 1.0, // ₹1 per minute
+                totalFare: totalFare,
+              ),
+            ),
+          );
+        }
+      });
+    }
+    // If public zone, just return to map (already done by clearing state)
   }
 
   @override
@@ -686,6 +911,103 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
             ),
 
+          // Zoom buttons (only show if not parked)
+          if (!_isParked && !_showSearchOverlay)
+            Builder(
+              builder: (context) {
+                final screenHeight = MediaQuery.of(context).size.height;
+                final topPadding = MediaQuery.of(context).padding.top;
+                
+                // Legend is at top + 90, with ~100px height, plus 8px spacing
+                const double legendTop = 90;
+                const double legendHeight = 100; // Approximate
+                const double spacing = 8;
+                const double zoomButtonsTop = legendTop + legendHeight + spacing;
+                const double zoomButtonsHeight = 100; // 2 buttons * 40px + spacing
+                
+                // Calculate bottom position of zoom buttons from top of screen
+                final double zoomButtonsBottomFromTop = topPadding + zoomButtonsTop + zoomButtonsHeight;
+                
+                // Calculate bottom position from bottom of screen
+                final double zoomButtonsBottomFromBottom = screenHeight - zoomButtonsBottomFromTop;
+                
+                // Hide zoom buttons if bottom sheet covers them
+                final bool shouldShow = _bottomSheetHeight < zoomButtonsBottomFromBottom;
+                
+                if (!shouldShow) return const SizedBox.shrink();
+                
+                return Positioned(
+                  top: topPadding + zoomButtonsTop,
+                  right: 16,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.08),
+                          blurRadius: 20,
+                        )
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Zoom In button
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _zoomIn,
+                            borderRadius: const BorderRadius.only(
+                              topLeft: Radius.circular(16),
+                              topRight: Radius.circular(16),
+                            ),
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.add,
+                                color: Colors.black87,
+                                size: 24,
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Divider
+                        Container(
+                          height: 1,
+                          width: 48,
+                          color: Colors.grey.withOpacity(0.2),
+                        ),
+                        // Zoom Out button
+                        Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _zoomOut,
+                            borderRadius: const BorderRadius.only(
+                              bottomLeft: Radius.circular(16),
+                              bottomRight: Radius.circular(16),
+                            ),
+                            child: Container(
+                              width: 48,
+                              height: 48,
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.remove,
+                                color: Colors.black87,
+                                size: 24,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+
           // --- Top Address Bar ---
           Positioned(
             top: MediaQuery.of(context).padding.top + 16,
@@ -705,6 +1027,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               ),
               child: Row(
                 children: [
+                  // Back button (only show when a search location is selected)
+                  if (_selectedLocation != null)
+                    Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: _goBackToOriginalLocation,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            Icons.arrow_back,
+                            color: Colors.black87,
+                            size: 20,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_selectedLocation != null) const SizedBox(width: 8),
                   Icon(
                       _isLocating
                           ? Icons.sync // Show a spinner
@@ -738,8 +1078,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             Builder(
               builder: (context) {
                 const double fabBottomPosition = 100.0; // Fixed position from bottom
-                const double fabHeight = 56.0; // Standard FAB height
-                const double fabTopPosition = fabBottomPosition + fabHeight; // Top of FAB
                 
                 // Hide FAB if bottom sheet covers it (sheet height > FAB bottom position)
                 final bool shouldShow = _bottomSheetHeight < fabBottomPosition;
@@ -752,7 +1090,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   child: FloatingActionButton(
                     onPressed: () {
                       if(_locationFetched) {
-                        _mapController.move(_userLocation, 18.0);
+                        _currentZoom = 18.0;
+                _mapController.move(_userLocation, _currentZoom);
                       } else {
                         // Try to get it again
                         _determinePosition();
@@ -882,7 +1221,39 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     ),
                   ),
                 )
-              else if (zones.isEmpty)
+              else if (zones.isEmpty && _locationFetched)
+                Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Center(
+                    child: Column(
+                      children: [
+                        Icon(
+                          Icons.local_parking_outlined,
+                          size: 48,
+                          color: Colors.grey[400],
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'No parking zones found nearby',
+                          style: GoogleFonts.inter(
+                            color: Colors.grey[600],
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Try searching for another location',
+                          style: GoogleFonts.inter(
+                            color: Colors.grey[500],
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else if (zones.isEmpty && !_locationFetched)
                 Padding(
                   padding: const EdgeInsets.all(24.0),
                   child: Center(
@@ -1052,7 +1423,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                                 ],
                               ),
                             )
-                          : _searchResults.isEmpty
+                          : _searchResults.isEmpty && _searchController.text.isNotEmpty
                               ? Center(
                                   child: Text(
                                     'No results found',
@@ -1065,8 +1436,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                               : ListView.builder(
                                   itemCount: _searchResults.length,
                                   itemBuilder: (context, index) {
-                                    final result = _searchResults[index];
-                                    return _buildSearchResultItem(result);
+                                    final suggestion = _searchResults[index];
+                                    return _buildSearchResultItem(suggestion);
                                   },
                                 ),
                 ),
@@ -1078,11 +1449,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildSearchResultItem(SearchResult result) {
-    final hasPolygon = result.polygon != null && result.polygon!.isNotEmpty;
-    
+  Widget _buildSearchResultItem(SearchSuggestion suggestion) {
     return InkWell(
-      onTap: () => _onSearchResultSelected(result),
+      onTap: () => _onSearchSuggestionSelected(suggestion),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
@@ -1094,8 +1463,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         child: Row(
           children: [
             Icon(
-              hasPolygon ? Icons.map : Icons.location_on,
-              color: hasPolygon 
+              suggestion.hasParkingZones ? Icons.local_parking : Icons.location_on,
+              color: suggestion.hasParkingZones 
                   ? Theme.of(context).colorScheme.primary
                   : Colors.grey[600],
               size: 24,
@@ -1106,29 +1475,25 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    result.displayName,
+                    suggestion.name,
                     style: GoogleFonts.inter(
                       color: Colors.black,
                       fontWeight: FontWeight.w500,
                       fontSize: 16,
                     ),
                   ),
-                  if (result.fullAddress.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      result.fullAddress,
-                      style: GoogleFonts.inter(
-                        color: Colors.grey[600],
-                        fontSize: 13,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
+                  const SizedBox(height: 4),
+                  Text(
+                    '${suggestion.coordinates.latitude.toStringAsFixed(4)}, ${suggestion.coordinates.longitude.toStringAsFixed(4)}',
+                    style: GoogleFonts.inter(
+                      color: Colors.grey[600],
+                      fontSize: 12,
                     ),
-                  ],
+                  ),
                 ],
               ),
             ),
-            if (hasPolygon)
+            if (suggestion.hasParkingZones)
               Container(
                 margin: const EdgeInsets.only(right: 8),
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1137,7 +1502,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
-                  'Zone',
+                  'Zones',
                   style: TextStyle(
                     color: Colors.green[700],
                     fontSize: 10,
@@ -1211,7 +1576,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                   "Time",
                   _formatDuration(_parkingDuration),
                 ),
-                _buildStatColumn("Rate", "\$2.50/hr"), // UNTOUCHED (Mock data)
+                // Show rate only if zone is private
+                if (_parkedZone!.isPrivate)
+                  _buildStatColumn("Rate", _parkedZone!.hourlyRate)
+                else
+                  _buildStatColumn("Type", "Free"),
                 _buildStatColumn("Points", "+20"), // Mock data
               ],
             ),
