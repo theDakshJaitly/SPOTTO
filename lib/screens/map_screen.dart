@@ -779,48 +779,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
 
   @override
   Widget build(BuildContext context) {
-    // TEMPORARY: Show simple UI to verify screen renders
-    if (kIsWeb) {
-      return Scaffold(
-        body: Container(
-          color: Colors.green[100],
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.map, size: 100, color: Colors.green[700]),
-                const SizedBox(height: 20),
-                Text(
-                  'Map Screen is Working!',
-                  style: TextStyle(
-                    fontSize: 24,
-                    color: Colors.green[900],
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  'Location: ${_currentPlacename}',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.green[700],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  'Zones: ${zones.length}',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.green[700],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-    
     return Scaffold(
       body: Stack(
         children: [
