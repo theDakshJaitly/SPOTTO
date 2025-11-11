@@ -561,6 +561,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
     }
   }
 
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this); // Remove lifecycle observer
     _gpsServiceSubscription?.cancel();
