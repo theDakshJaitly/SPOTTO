@@ -1152,9 +1152,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
           if (_showSearchOverlay)
             _buildSearchOverlay(),
 
-            ],
-          );
-        },
+        ],
       ),
     );
   }
