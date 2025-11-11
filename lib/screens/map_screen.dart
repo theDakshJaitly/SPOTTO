@@ -781,39 +781,61 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
               Container(
                 width: constraints.maxWidth,
                 height: constraints.maxHeight,
-                color: Colors.grey[100],
-              ),
-              SizedBox(
-                width: constraints.maxWidth,
-                height: constraints.maxHeight,
-                child: FlutterMap(
-                  mapController: _mapController,
-                  options: MapOptions(
-                    initialCenter: _userLocation,
-                    initialZoom: 18.0,
-                    minZoom: 3,
-                    maxZoom: 19,
-                    onTap: (tapPos, latlng) {
-                      if (!_isParked && zones.isNotEmpty) {
-                        for (final zone in zones) {
-                          if (_pointInPolygon(latlng, zone.boundaries)) {
-                            _onZoneTap(zone);
-                            return;
-                          }
-                        }
-                      }
-                    },
+                color: Colors.blue[50],
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.map, size: 64, color: Colors.blue[300]),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Loading Map...',
+                        style: TextStyle(
+                          fontSize: 18,
+                          color: Colors.blue[700],
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
-                  children: [
-                    TileLayer(
-                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName: 'com.example.spotto',
-                      maxZoom: 19,
-                      minZoom: 3,
-                      errorTileCallback: (tile, error, stackTrace) {
-                        debugPrint('Tile error: $error');
-                      },
-                    ),
+                ),
+              ),
+              // Try-catch wrapper for map
+              Builder(
+                builder: (context) {
+                  try {
+                    return SizedBox(
+                      width: constraints.maxWidth,
+                      height: constraints.maxHeight,
+                      child: FlutterMap(
+                        mapController: _mapController,
+                        options: MapOptions(
+                          initialCenter: _userLocation,
+                          initialZoom: 18.0,
+                          minZoom: 3,
+                          maxZoom: 19,
+                          onTap: (tapPos, latlng) {
+                            if (!_isParked && zones.isNotEmpty) {
+                              for (final zone in zones) {
+                                if (_pointInPolygon(latlng, zone.boundaries)) {
+                                  _onZoneTap(zone);
+                                  return;
+                                }
+                              }
+                            }
+                          },
+                        ),
+                        children: [
+                          TileLayer(
+                            urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                            subdomains: const ['a', 'b', 'c'],
+                            userAgentPackageName: 'com.example.spotto',
+                            maxZoom: 19,
+                            minZoom: 3,
+                            errorTileCallback: (tile, error, stackTrace) {
+                              debugPrint('Tile error: $error');
+                            },
+                          ),
               if (zones.isNotEmpty)
                 PolygonLayer(
                   polygons: zones.map((zone) {
@@ -900,8 +922,24 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
                     );
                   }).toList(),
                 ),
-                  ],
-                ),
+                        ],
+                      ),
+                    );
+                  } catch (e) {
+                    debugPrint('Map error: $e');
+                    return Container(
+                      width: constraints.maxWidth,
+                      height: constraints.maxHeight,
+                      color: Colors.grey[200],
+                      child: Center(
+                        child: Text(
+                          'Map loading...',
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
+                      ),
+                    );
+                  }
+                },
               ),
 
               // --- CONDITIONAL UI ---
