@@ -88,17 +88,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
       });
       // Don't start simulation or load zones yet - wait for location
 
-      // On web, skip GPS completely
+      // On web, try to get location but don't use service status stream (not supported on web)
       if (kIsWeb) {
-        Future.delayed(const Duration(milliseconds: 500), () {
-          if (mounted) {
-            setState(() {
-              _locationFetched = true;
-              _currentPlacename = "Pune, Maharashtra";
-            });
-            _fetchParkingZones();
-          }
-        });
+        // On web, directly try to get location
+        _determinePosition();
       } else {
         // Listen for GPS service status (e.g., user turning it on/off)
         _gpsServiceSubscription = Geolocator.getServiceStatusStream().listen(
@@ -219,7 +212,61 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
     // 4. Cancel any old stream
     await _positionStreamSubscription?.cancel();
 
-    // 5. Start a new location stream
+    // 5. On web, use getCurrentPosition instead of stream (more reliable)
+    if (kIsWeb) {
+      try {
+        Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        
+        // Get address from coordinates
+        List<Placemark> placemarks = await placemarkFromCoordinates(
+          position.latitude,
+          position.longitude,
+        );
+        
+        String address = placemarks.isNotEmpty
+            ? '${placemarks.first.street}, ${placemarks.first.locality}, ${placemarks.first.administrativeArea}'
+            : '${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}';
+
+        if (mounted) {
+          setState(() {
+            _userLocation = LatLng(position.latitude, position.longitude);
+            _locationFetched = true;
+            _currentPlacename = address;
+            _isLocating = false;
+            _currentZoom = 18.0;
+            _mapController.move(_userLocation, _currentZoom);
+            
+            // Update original location with the actual GPS location
+            _originalLocation = _userLocation;
+            _originalPlacename = address;
+          });
+          // Now that location is found, fetch parking zones
+          _fetchParkingZones();
+        }
+      } catch (error) {
+        if (mounted) {
+          setState(() {
+            _currentPlacename = "Error finding location. Using default location.";
+            _isLocating = false;
+            // Still mark as fetched so we can show zones
+            _locationFetched = true;
+            
+            // Store original location if not already stored (using default)
+            if (_originalLocation == null) {
+              _originalLocation = _userLocation;
+              _originalPlacename = _currentPlacename;
+            }
+          });
+          // Load zones even if location failed
+          _fetchParkingZones();
+        }
+      }
+      return;
+    }
+
+    // 5. Start a new location stream (for mobile)
     _positionStreamSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
