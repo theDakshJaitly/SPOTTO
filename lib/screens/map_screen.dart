@@ -777,6 +777,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
                   options: MapOptions(
                     initialCenter: _userLocation,
                     initialZoom: 18.0,
+                    minZoom: 3,
+                    maxZoom: 19,
                     onTap: (tapPos, latlng) {
                       if (!_isParked && zones.isNotEmpty) {
                         for (final zone in zones) {
@@ -790,11 +792,10 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
                   ),
                   children: [
                     TileLayer(
-                      urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      subdomains: const ['a', 'b', 'c'],
+                      urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.spotto',
                       maxZoom: 19,
-                      tileProvider: NetworkTileProvider(),
+                      minZoom: 3,
                       errorTileCallback: (tile, error, stackTrace) {
                         debugPrint('Tile error: $error');
                       },
