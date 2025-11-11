@@ -2,6 +2,19 @@
 
 This is the **simplest and most reliable** method for Flutter web apps!
 
+## ⚠️ IMPORTANT: Change GitHub Pages Source Setting!
+
+Before anything else, you need to change your GitHub Pages source:
+
+1. Go to your repository → **Settings** → **Pages**
+2. Under "Source", change from **"Deploy from a branch"** with `/docs` folder
+3. To: **"GitHub Actions"** (this will use the workflow file)
+4. Click **Save**
+
+This will stop the Jekyll build error!
+
+---
+
 ## Step 1: Create GitHub Repository
 
 1. Go to **https://github.com/new**
