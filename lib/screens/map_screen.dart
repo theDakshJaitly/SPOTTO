@@ -67,61 +67,68 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // Add lifecycle observer
-    _mapController = MapController();
-    // Store the initial default location as original location
-    _originalLocation = _userLocation;
-    _originalPlacename = _currentPlacename;
-    // Initialize bottom sheet height to initial size (25% of screen)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        final screenHeight = MediaQuery.of(context).size.height;
-        setState(() {
-          _bottomSheetHeight = screenHeight * 0.25;
-        });
-      }
-    });
-    // Don't start simulation or load zones yet - wait for location
-
-    // Listen for GPS service status (e.g., user turning it on/off)
-    _gpsServiceSubscription = Geolocator.getServiceStatusStream().listen(
-            (ServiceStatus status) {
-          if (status == ServiceStatus.enabled) {
-            _determinePosition(); // GPS was just turned on, try to get location
-          } else {
-            // GPS was turned off - reset everything
-            _positionStreamSubscription?.cancel();
-            _simulationTimer?.cancel();
-            if (mounted) {
-              setState(() {
-                zones = []; // Clear all zones
-                _locationFetched = false;
-                _isLocating = false;
-                _isLoadingZones = false;
-                _currentPlacename = "Please enable GPS to fetch zones";
-                // Reset to default location
-                _userLocation = const LatLng(18.604792, 73.716666);
-                _currentZoom = 18.0;
-                _mapController.move(_userLocation, _currentZoom);
-              });
-            }
+    try {
+      WidgetsBinding.instance.addObserver(this); // Add lifecycle observer
+      _mapController = MapController();
+      // Store the initial default location as original location
+      _originalLocation = _userLocation;
+      _originalPlacename = _currentPlacename;
+      // Initialize bottom sheet height to initial size (25% of screen)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          try {
+            final screenHeight = MediaQuery.of(context).size.height;
+            setState(() {
+              _bottomSheetHeight = screenHeight * 0.25;
+            });
+          } catch (e) {
+            debugPrint('Error in postFrameCallback: $e');
           }
         }
-    );
-    // Also run the check once on init
-    // On web, skip GPS and just load zones with default location
-    if (kIsWeb) {
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (mounted) {
-          setState(() {
-            _locationFetched = true;
-            _currentPlacename = "Pune, Maharashtra";
-          });
-          _fetchParkingZones();
-        }
       });
-    } else {
-      _determinePosition();
+      // Don't start simulation or load zones yet - wait for location
+
+      // On web, skip GPS completely
+      if (kIsWeb) {
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            setState(() {
+              _locationFetched = true;
+              _currentPlacename = "Pune, Maharashtra";
+            });
+            _fetchParkingZones();
+          }
+        });
+      } else {
+        // Listen for GPS service status (e.g., user turning it on/off)
+        _gpsServiceSubscription = Geolocator.getServiceStatusStream().listen(
+                (ServiceStatus status) {
+              if (status == ServiceStatus.enabled) {
+                _determinePosition(); // GPS was just turned on, try to get location
+              } else {
+                // GPS was turned off - reset everything
+                _positionStreamSubscription?.cancel();
+                _simulationTimer?.cancel();
+                if (mounted) {
+                  setState(() {
+                    zones = []; // Clear all zones
+                    _locationFetched = false;
+                    _isLocating = false;
+                    _isLoadingZones = false;
+                    _currentPlacename = "Please enable GPS to fetch zones";
+                    // Reset to default location
+                    _userLocation = const LatLng(18.604792, 73.716666);
+                    _currentZoom = 18.0;
+                    _mapController.move(_userLocation, _currentZoom);
+                  });
+                }
+              }
+            }
+        );
+        _determinePosition();
+      }
+    } catch (e) {
+      debugPrint('Error in initState: $e');
     }
   }
 
