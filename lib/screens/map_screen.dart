@@ -772,6 +772,48 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
 
   @override
   Widget build(BuildContext context) {
+    // TEMPORARY: Show simple UI to verify screen renders
+    if (kIsWeb) {
+      return Scaffold(
+        body: Container(
+          color: Colors.green[100],
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.map, size: 100, color: Colors.green[700]),
+                const SizedBox(height: 20),
+                Text(
+                  'Map Screen is Working!',
+                  style: TextStyle(
+                    fontSize: 24,
+                    color: Colors.green[900],
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Location: ${_currentPlacename}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.green[700],
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Zones: ${zones.length}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.green[700],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    
     return Scaffold(
       body: Stack(
         children: [
@@ -799,34 +841,34 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
           // Map widget
           Positioned.fill(
             child: FlutterMap(
-                        mapController: _mapController,
-                        options: MapOptions(
-                          initialCenter: _userLocation,
-                          initialZoom: 18.0,
-                          minZoom: 3,
-                          maxZoom: 19,
-                          onTap: (tapPos, latlng) {
-                            if (!_isParked && zones.isNotEmpty) {
-                              for (final zone in zones) {
-                                if (_pointInPolygon(latlng, zone.boundaries)) {
-                                  _onZoneTap(zone);
-                                  return;
-                                }
-                              }
-                            }
-                          },
-                        ),
-                        children: [
-                          TileLayer(
-                            urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                            subdomains: const ['a', 'b', 'c'],
-                            userAgentPackageName: 'com.example.spotto',
-                            maxZoom: 19,
-                            minZoom: 3,
-                            errorTileCallback: (tile, error, stackTrace) {
-                              debugPrint('Tile error: $error');
-                            },
-                          ),
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: _userLocation,
+                initialZoom: 18.0,
+                minZoom: 3,
+                maxZoom: 19,
+                onTap: (tapPos, latlng) {
+                  if (!_isParked && zones.isNotEmpty) {
+                    for (final zone in zones) {
+                      if (_pointInPolygon(latlng, zone.boundaries)) {
+                        _onZoneTap(zone);
+                        return;
+                      }
+                    }
+                  }
+                },
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  subdomains: const ['a', 'b', 'c'],
+                  userAgentPackageName: 'com.example.spotto',
+                  maxZoom: 19,
+                  minZoom: 3,
+                  errorTileCallback: (tile, error, stackTrace) {
+                    debugPrint('Tile error: $error');
+                  },
+                ),
               if (zones.isNotEmpty)
                 PolygonLayer(
                   polygons: zones.map((zone) {
