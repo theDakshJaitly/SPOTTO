@@ -1200,12 +1200,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
               )
             ],
           ),
-          child: ListView(
-            controller: scrollController,
-            physics: const ClampingScrollPhysics(),
-            padding: const EdgeInsets.all(0),
+          child: Column(
             children: [
-              Center(
+              // Drag handle
+              GestureDetector(
+                onVerticalDragUpdate: (details) {
+                  // Allow dragging the handle
+                },
                 child: Container(
                   width: 40,
                   height: 5,
@@ -1216,6 +1217,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
                   ),
                 ),
               ),
+              // Scrollable content
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  physics: const ClampingScrollPhysics(),
+                  padding: const EdgeInsets.all(0),
+                  children: [
               // Search button that opens full-screen overlay
               Padding(
                 padding:
@@ -1340,11 +1348,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin, Wi
                 )
               else
                 ...zones.map((zone) => _buildZoneListItem(zone)),
-              ],
-            ),
-          );
-        },
-      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    ),
     );
   }
 
